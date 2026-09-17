@@ -8,7 +8,7 @@
  * 而超时是最亏的失败方式——钱照付，图拿不到。宁可多等三分钟。
  */
 import { falEstimateImageCost, falGenerateImage, falGenerateImageWithRefs, type ImageQuality } from "./image-fal";
-import { comfyGenerateFrame } from "./video-comfy";
+import { comfyGenerateFrame, type ComfyFrameHooks } from "./video-comfy";
 
 const IMAGE_TIMEOUT_MS = Number(process.env.IMAGE_TIMEOUT_MS || 8 * 60 * 1000);
 
@@ -100,8 +100,9 @@ export async function generateImageWithRefs(opts: {
   size: string;
   refs: ImageRef[];
   quality?: ImageQuality;
+  comfyHooks?: ComfyFrameHooks;
 }): Promise<ImageResult> {
-  if (imageBackend() === "comfy") return comfyGenerateFrame({ prompt: opts.prompt, refs: opts.refs });
+  if (imageBackend() === "comfy") return comfyGenerateFrame({ prompt: opts.prompt, refs: opts.refs, ...opts.comfyHooks });
   if (imageBackend() === "fal") return falGenerateImageWithRefs(opts);
   if (opts.refs.length === 0) return generateImage(opts);
   const c = cfg();
