@@ -416,7 +416,8 @@ export class VideoPollJob extends Job<PollPayload> {
       where: { id: String(payload.generationId) },
       include: { shot: { include: { chapter: true } } },
     });
-    if (!gen.externalTaskId || !gen.shot) return;
+    // 用户停止后可能仍有一个已经排入队列的轮询；它必须安静退出，不能把停止的任务又写回成功。
+    if (gen.status !== "running" || !gen.externalTaskId || !gen.shot) return;
 
     const shot = gen.shot;
     const fallback = shot.frameMode === "image" ? "frame_approved" : "storyboard_approved";
