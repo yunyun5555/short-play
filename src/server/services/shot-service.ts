@@ -69,7 +69,10 @@ export class ShotService extends Service {
     if (state.isFinal && state.state === "failed") {
       await this.db.$transaction(async (tx) => {
         const changed = await tx.generation.updateMany({ where: { id: gen.id, status: "running" }, data: { status: "failed", error: state.error, progress: "已结束", finishedAt: new Date() } });
-        if (changed.count) await tx.shot.update({ where: { id: shotId }, data: { status: gen.kind === "video" ? "frame_approved" : "storyboard_approved", reviewNote: state.error } });
+        if (changed.count) {
+          const shot = await tx.shot.findUniqueOrThrow({ where: { id: shotId } });
+          await tx.shot.update({ where: { id: shotId }, data: { status: gen.kind === "video" && shot.frameId && shot.frameMode === "image" ? "frame_approved" : "storyboard_approved", reviewNote: state.error } });
+        }
       });
     }
     return { progress: state.isFinal ? state.state === "success" ? "ComfyUI 已完成，正在保存产物" : state.error : state.progress, terminal: state.isFinal };
