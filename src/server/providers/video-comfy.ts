@@ -27,6 +27,25 @@ function slots(files: string[]) {
   return JSON.stringify([...files.slice(0, 10), ...Array(10).fill("")].slice(0, 10));
 }
 
+function attachImages(wf: ComfyWorkflow, gridId: string, files: string[], prefix: string) {
+  const grid = wf[gridId];
+  grid.inputs.slots_json = "[]";
+  for (let i = 1; i <= 10; i += 1) delete grid.inputs[`image_${i}`];
+  files.slice(0, 10).forEach((file, i) => {
+    const loadId = `${prefix}_${i + 1}`;
+    wf[loadId] = { class_type: "LoadImage", inputs: { image: file } };
+    grid.inputs[`image_${i + 1}`] = [loadId, 0];
+  });
+}
+
+function bindReferenceImages(wf: ComfyWorkflow, files: string[]) {
+  const first = files[0] ? [files[0]] : [];
+  const remaining = files.slice(1);
+  attachImages(wf, "526", remaining.length ? remaining : first, "901");
+  attachImages(wf, "527", remaining.length ? [remaining[0]] : first, "902");
+  attachImages(wf, "528", first.length ? first : remaining.slice(0, 1), "903");
+}
+
 async function uploadImage(base: string, dataUrl: string, index: number) {
   if (!dataUrl.startsWith("data:")) return dataUrl;
   const comma = dataUrl.indexOf(",");
@@ -55,13 +74,7 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
   wf["141"].inputs.value = Math.max(5, Math.min(15, Math.round(input.duration)));
   if (input.aspectRatio === "9:16") wf["150"].inputs.aspect_ratio = "9:16 (Portrait)";
 
-  // 本工作流的三个参考入口：人设、场景资产、分镜关键画面。
-  // 工作台送来的时间线首帧优先进入 Panel；其余参考图同时供人设与资产节点使用。
-  const first = files[0] ? [files[0]] : [];
-  const remaining = files.slice(1);
-  wf["526"].inputs.slots_json = slots(remaining.length ? remaining : first);
-  wf["527"].inputs.slots_json = slots(remaining.length ? [remaining[0]] : first);
-  wf["528"].inputs.slots_json = slots(first.length ? first : remaining.slice(0, 1));
+  bindReferenceImages(wf, files);
 
   const res = await fetch(`${base}/prompt`, {
     method: "POST",
@@ -134,11 +147,7 @@ export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ b
   const wf = cloneWorkflow();
   wf["147"].inputs.value = opts.prompt;
   wf["141"].inputs.value = 5;
-  const first = images[0] ? [images[0]] : [];
-  const remaining = images.slice(1);
-  wf["526"].inputs.slots_json = slots(remaining.length ? remaining : first);
-  wf["527"].inputs.slots_json = slots(remaining.length ? [remaining[0]] : first);
-  wf["528"].inputs.slots_json = slots(first.length ? first : remaining.slice(0, 1));
+  bindReferenceImages(wf, images);
   // 148 是视频 VAE 解码图像；保存它可以直接回填给工作台做首帧。
   wf["998"] = { class_type: "SaveImage", inputs: { filename_prefix: "short-play/frames", images: ["148", 0] } };
 
