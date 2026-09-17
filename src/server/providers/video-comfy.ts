@@ -48,8 +48,16 @@ function bindReferenceImages(wf: ComfyWorkflow, files: string[]) {
 
 function applyVideoSettings(wf: ComfyWorkflow, input: VideoCreateInput) {
   // 工作台项目设置中的清晰度直接控制 ResolutionSelector。
-  const mp: Record<string, number> = { "768P": 0.8, "1080P": 1.6, "2K": 3.2 };
-  wf["150"].inputs.megapixels = mp[input.resolution || "1080P"] || 1.6;
+  const mp: Record<string, number> = {
+    // 按像素量控制；ResolutionSelector 再按项目画幅取最接近 32 倍数的宽高。
+    "360P": 0.25,
+    "480P": 0.4,
+    "720P": 0.9,
+    "768P": 1.0,
+    "1080P": 2.1,
+    "2K": 3.7,
+  };
+  wf["150"].inputs.megapixels = mp[input.resolution || "1080P"] || 2.1;
   wf["150"].inputs.aspect_ratio = input.aspectRatio === "9:16" ? "9:16 (Portrait)" : "16:9 (Widescreen)";
 }
 
