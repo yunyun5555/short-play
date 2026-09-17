@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { IMAGE_QUALITY_OPTIONS, imagePrice, type Chapter, type PrevizRun, type Project, type Shot, type ShotStatus, type FrameMode } from "@/lib/types";
 import { STATUS_LABEL, formatTimecode, isGenerating } from "@/lib/status";
 import {
@@ -215,10 +216,17 @@ export function PreviewPane({ shot, ...rest }: { shot: Shot | null } & Omit<Prev
 
 function PreviewBody({ shot, project, chapter, placement, stageRequest }: PreviewProps) {
   const { act: run, pending } = useAct();
+  const router = useRouter();
   const [stage, setStage] = useState<Stage>(stageRequest?.stage ?? defaultStage(shot.status));
   useEffect(() => {
     if (stageRequest) setStage(stageRequest.stage);
   }, [stageRequest]);
+  // 生成期间主动拉取服务端最新 Generation：ComfyUI 的真实百分比与已运行秒数无需手动刷新。
+  useEffect(() => {
+    if (!isGenerating(shot.status)) return;
+    const timer = window.setInterval(() => router.refresh(), 2_000);
+    return () => window.clearInterval(timer);
+  }, [router, shot.id, shot.status]);
   // 这一镜有没有可截帧的预演：有就在首帧页最上面摆截帧器，并在别的页签给个入口
   const [previzRuns, setPrevizRuns] = useState<PrevizRun[] | null>(null);
   useEffect(() => {
