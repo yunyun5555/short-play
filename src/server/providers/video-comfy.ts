@@ -8,7 +8,7 @@ function baseUrl() {
   return value;
 }
 
-function headers() {
+function headers(): Record<string, string> {
   const token = process.env.COMFYUI_API_TOKEN || "";
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
