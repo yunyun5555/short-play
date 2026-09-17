@@ -33,6 +33,7 @@ export abstract class ImageJob<P, C> extends Job<P> {
 
   /** 记进 Generation.model 的名字。切了后端要如实记，不然版本历史里分不清哪张是谁出的 */
   protected modelFor(plan: ImagePlan) {
+    if (imageBackend() === "comfy") return "comfyui:H3-frame";
     if (imageBackend() === "fal") return `fal:${process.env.FAL_IMAGE_MODEL || "openai/gpt-image-2.5/flare"}@${plan.quality ?? defaultQuality()}`;
     return process.env.IMAGE_MODEL || "gpt-image-2";
   }
@@ -75,7 +76,13 @@ export abstract class ImageJob<P, C> extends Job<P> {
     });
 
     try {
-      const result = await generateImageWithRefs({ prompt: plan.prompt, size: plan.size, refs: plan.refs, quality: plan.quality });
+      const isCancelled = async () => (await db.generation.findUnique({ where: { id: gen.id }, select: { status: true } }))?.status !== "running";
+      const result = await generateImageWithRefs({ prompt: plan.prompt, size: plan.size, refs: plan.refs, quality: plan.quality, comfyHooks: {
+        isCancelled,
+        onSubmitted: async (externalTaskId) => { await db.generation.update({ where: { id: gen.id }, data: { externalTaskId } }); },
+        onProgress: async (progress) => { await db.generation.updateMany({ where: { id: gen.id, status: "running" }, data: { progress } }); },
+      } });
+      if (await isCancelled()) return;
       const asset = await saveAsset({
         buffer: result.buffer,
         mime: result.mime,
@@ -90,6 +97,7 @@ export abstract class ImageJob<P, C> extends Job<P> {
       ]);
       await this.afterSuccess(ctx, payload);
     } catch (err) {
+      if ((await db.generation.findUnique({ where: { id: gen.id } }))?.status !== "running") return;
       const { short, long } = errText(err);
       await db.$transaction([
         ...this.onFailure(ctx, short),
