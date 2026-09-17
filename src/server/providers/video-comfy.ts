@@ -14,88 +14,82 @@ type ComfyLiveProgress = {
   terminalError?: string;
 };
 
-const comfyProgress = new Map<string, ComfyLiveProgress>();
-const comfySockets = new Map<string, WebSocket>();
-const comfySocketTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+type ComfyWatch = { socket: WebSocket; promptId: string; timer?: ReturnType<typeof setTimeout>; ready: Promise<void> };
+const shared = globalThis as typeof globalThis & { __comfyLive?: { progress: Map<string, ComfyLiveProgress>; watches: Map<string, ComfyWatch> } };
+const liveState = shared.__comfyLive ??= { progress: new Map(), watches: new Map() };
+const comfyProgress = liveState.progress;
+const comfyWatches = liveState.watches;
 
 function taskParts(taskId: string) {
   const [promptId, clientId = ""] = taskId.slice("comfy::".length).split("::");
   return { promptId, clientId };
 }
 
-function forgetComfyProgressWatch(promptId: string) {
-  const timer = comfySocketTimeouts.get(promptId);
-  if (timer) clearTimeout(timer);
-  comfySocketTimeouts.delete(promptId);
-  comfySockets.delete(promptId);
-}
-
 function closeComfyProgressWatch(promptId: string) {
-  const socket = comfySockets.get(promptId);
-  forgetComfyProgressWatch(promptId);
+  for (const [clientId, watch] of comfyWatches) {
+    if (watch.promptId !== promptId && clientId !== promptId) continue;
+    clearTimeout(watch.timer);
+    comfyWatches.delete(clientId);
+    try { watch.socket.close(); } catch {}
+  }
   comfyProgress.delete(promptId);
-  try { socket?.close(); } catch {}
 }
 
 function progressLabel(promptId: string) {
   const p = comfyProgress.get(promptId);
   if (!p) return "";
-  if (typeof p.percent === "number") {
-    const steps = typeof p.value === "number" && typeof p.max === "number" ? `（${p.value}/${p.max}）` : "";
-    return `当前节点 ${p.node || ""} 进度 ${p.percent}%${steps}`;
-  }
+  if (typeof p.percent === "number") return `当前节点 ${p.node || ""} 进度 ${p.percent}%（${p.value}/${p.max}）`;
   return p.stage || (p.node ? `正在执行节点 ${p.node}` : "");
 }
 
-function startComfyProgressWatch(base: string, clientId: string, promptId: string) {
-  if (!clientId || comfySockets.has(promptId) || typeof WebSocket === "undefined") return;
-  try {
-    const wsBase = base.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-    const socket = new WebSocket(`${wsBase}/ws?clientId=${encodeURIComponent(clientId)}`);
-    comfySockets.set(promptId, socket);
-    comfySocketTimeouts.set(promptId, setTimeout(() => closeComfyProgressWatch(promptId), 2 * 60 * 60 * 1000));
-
-    socket.addEventListener("message", (event) => {
-      const raw = typeof event.data === "string" ? event.data : "";
-      if (!raw) return;
-      try {
-        const message = JSON.parse(raw) as { type?: string; data?: Record<string, unknown> };
-        const data = message.data || {};
-        if (data.prompt_id && String(data.prompt_id) !== promptId) return;
-
-        if (message.type === "execution_interrupted" || message.type === "execution_error") {
-          comfyProgress.set(promptId, { ...comfyProgress.get(promptId), updatedAt: Date.now(), terminalError: message.type === "execution_interrupted" ? "ComfyUI 已停止生成" : String(data.exception_message || "ComfyUI 执行失败") });
-        } else if (message.type === "progress") {
-          const value = Number(data.value);
-          const max = Number(data.max);
-          const percent = Number.isFinite(value) && Number.isFinite(max) && max > 0
-            ? Math.max(0, Math.min(100, Math.floor((value / max) * 100)))
-            : undefined;
-          comfyProgress.set(promptId, {
-            startedAt: comfyProgress.get(promptId)?.startedAt,
-            value: Number.isFinite(value) ? value : undefined,
-            max: Number.isFinite(max) ? max : undefined,
-            percent,
-            node: typeof data.node === "string" ? data.node : undefined,
-            updatedAt: Date.now(),
-          });
-        } else if (message.type === "executing" || message.type === "execution_start") {
-          comfyProgress.set(promptId, {
-            startedAt: message.type === "execution_start" ? Number(data.timestamp) || Date.now() : comfyProgress.get(promptId)?.startedAt,
-            node: typeof data.node === "string" ? data.node : undefined,
-            stage: message.type === "execution_start" ? "ComfyUI 开始执行" : "ComfyUI 正在执行",
-            updatedAt: Date.now(),
-          });
-        }
-      } catch {
-        // 预览二进制帧或非 JSON 消息不影响文字进度。
-      }
-    });
-    socket.addEventListener("close", () => { if (comfySockets.get(promptId) === socket) forgetComfyProgressWatch(promptId); });
-    socket.addEventListener("error", () => { try { socket.close(); } catch {} });
-  } catch {
-    // WebSocket 不可用时仍回退到 HTTP 队列状态，不影响出片。
+// Connect before submitting so execution_start (the real elapsed-time origin) is not lost.
+async function startComfyProgressWatch(base: string, clientId: string, promptId: string) {
+  if (!clientId || typeof WebSocket === "undefined") return;
+  const existing = comfyWatches.get(clientId);
+  if (existing) {
+    if (promptId) existing.promptId = promptId;
+    await existing.ready;
+    return;
   }
+  const socket = new WebSocket(`${base.replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/ws?clientId=${encodeURIComponent(clientId)}`);
+  const watch: ComfyWatch = { socket, promptId, ready: Promise.resolve() };
+  comfyWatches.set(clientId, watch);
+  watch.ready = new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, 1500);
+    const done = () => { clearTimeout(timeout); resolve(); };
+    socket.addEventListener("open", done, { once: true });
+    socket.addEventListener("error", done, { once: true });
+  });
+  watch.timer = setTimeout(() => closeComfyProgressWatch(watch.promptId || clientId), 2 * 60 * 60 * 1000);
+  socket.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    try {
+      const message = JSON.parse(event.data);
+      const data = message.data || {};
+      if (data.prompt_id && watch.promptId && String(data.prompt_id) !== watch.promptId) return;
+      const id = String(data.prompt_id || watch.promptId || "");
+      if (!id) return;
+      watch.promptId = id;
+      const prior = comfyProgress.get(id);
+      if (message.type === "execution_interrupted" || message.type === "execution_error") {
+        comfyProgress.set(id, { ...prior, updatedAt: Date.now(), terminalError: message.type === "execution_interrupted" ? "ComfyUI 已停止生成" : String(data.exception_message || "ComfyUI 执行失败") });
+      } else if (message.type === "progress") {
+        const value = Number(data.value), max = Number(data.max);
+        const percent = Number.isFinite(value) && Number.isFinite(max) && max > 0 ? Math.floor(value / max * 100) : undefined;
+        comfyProgress.set(id, { startedAt: prior?.startedAt, value, max, percent, node: String(data.node || prior?.node || ""), updatedAt: Date.now() });
+      } else if (message.type === "executing" || message.type === "execution_start") {
+        comfyProgress.set(id, { startedAt: message.type === "execution_start" ? Number(data.timestamp) || Date.now() : prior?.startedAt, node: String(data.node || ""), stage: "ComfyUI 正在执行", updatedAt: Date.now() });
+      }
+    } catch { /* binary previews and malformed messages are not progress */ }
+  });
+  socket.addEventListener("close", () => {
+    if (comfyWatches.get(clientId) === watch) {
+      clearTimeout(watch.timer);
+      comfyWatches.delete(clientId);
+    }
+  });
+  socket.addEventListener("error", () => { try { socket.close(); } catch {} });
+  await watch.ready;
 }
 
 function baseUrl() {
@@ -187,6 +181,7 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
   wf["141"].inputs.value = Math.max(5, Math.min(15, Math.round(input.duration)));
   applyVideoSettings(wf, input);
   bindReferenceImages(wf, files);
+  await startComfyProgressWatch(base, clientId, "");
 
   const res = await fetch(`${base}/prompt`, {
     method: "POST",
@@ -202,7 +197,7 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
     await comfyCancelVideoTask(`comfy::${d.prompt_id}`);
     throw new Error(`ComfyUI 部分节点验证失败，已取消不完整任务：${JSON.stringify(d.node_errors).slice(0, 1800)}`);
   }
-  startComfyProgressWatch(base, clientId, d.prompt_id);
+  await startComfyProgressWatch(base, clientId, d.prompt_id);
   return { taskId: `comfy::${d.prompt_id}::${clientId}`, raw: d };
 }
 
@@ -295,7 +290,7 @@ export async function comfyQueryVideoTask(taskId: string, outputKind: "video" | 
   const { promptId, clientId } = taskParts(taskId);
   const base = baseUrl();
   // Railway 重启后内存中的监听会消失；带 client_id 的新任务可在下一次轮询时自动重新监听。
-  startComfyProgressWatch(base, clientId, promptId);
+  await startComfyProgressWatch(base, clientId, promptId);
   const res = await fetch(`${base}/history/${encodeURIComponent(promptId)}`, { headers: headers(), signal: AbortSignal.timeout(60_000) });
   const raw = await res.text();
   if (!res.ok) throw new Error(`ComfyUI 查询 ${res.status}: ${raw.slice(0, 300)}`);
@@ -335,7 +330,7 @@ export async function comfyQueryVideoTask(taskId: string, outputKind: "video" | 
       isFinal: true,
       progress: "",
       resultUrl: "",
-      error: `ComfyUI 已结束，但工作流没有输出视频文件（${outputSummary(item.outputs)}）。请确认 VHS_VideoCombine / 保存视频节点已连接并启用。`,
+      error: `ComfyUI 已结束，但没有输出${outputKind === "frame" ? "指定首帧" : "视频"}文件（${outputSummary(item.outputs)}）。请检查生成和保存节点，参考图预览不算生成成功。`,
       cost: 0,
       raw: item,
     };
@@ -383,6 +378,7 @@ export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ b
   bindReferenceImages(wf, images);
   // 148 是视频 VAE 解码图像；保存它可以直接回填给工作台做首帧。
   wf["998"] = { class_type: "SaveImage", inputs: { filename_prefix: "short-play/frames", images: ["148", 0] } };
+  await startComfyProgressWatch(base, clientId, "");
 
   const submitted = await fetch(`${base}/prompt`, {
     method: "POST",
@@ -400,9 +396,9 @@ export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ b
     await comfyCancelVideoTask(taskId);
     throw new Error(`ComfyUI 首帧节点验证失败：${JSON.stringify(task.node_errors).slice(0, 1800)}`);
   }
-  startComfyProgressWatch(base, clientId, task.prompt_id);
+  await startComfyProgressWatch(base, clientId, task.prompt_id);
   try {
-  for (let attempt = 0; attempt < 450; attempt += 1) {
+  for (let attempt = 0; attempt < 900; attempt += 1) {
     if (await opts.isCancelled?.()) {
       await comfyCancelVideoTask(taskId);
       throw new Error("用户停止生成");
