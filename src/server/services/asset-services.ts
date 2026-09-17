@@ -16,7 +16,7 @@ export class ProjectService extends Service {
     return this.db.project.update({ where: { id: projectId }, data });
   }
 
-  updateVideoEngine(projectId: string, data: { videoEngine?: string; videoResolution?: string; imageQuality?: string; textOnlyRefs?: boolean }) {
+  updateVideoEngine(projectId: string, data: { videoEngine?: string; videoResolution?: string; imageQuality?: string; textOnlyRefs?: boolean; orientation?: string }) {
     return this.db.project.update({ where: { id: projectId }, data });
   }
 
