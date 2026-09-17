@@ -364,6 +364,10 @@ export async function stopVideo(projectId: string, chapterId: string, shotId: st
   return result;
 }
 
+export async function getShotLiveProgress(shotId: string) {
+  return shots.liveProgress(shotId);
+}
+
 export async function regenerateVideo(projectId: string, chapterId: string, shotId: string, instruction: string) {
   await shots.regenerateVideo(shotId, instruction);
   revalidatePath(paths.chapter(projectId, chapterId));
