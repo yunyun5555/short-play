@@ -69,6 +69,7 @@ export abstract class ImageJob<P, C> extends Job<P> {
         model: this.modelFor(plan),
         prompt: plan.prompt,
         status: "running",
+        progress: imageBackend() === "comfy" ? "ComfyUI：正在生成 H3 首帧" : "生成中",
         ...this.generationFields(ctx, plan),
       } as never,
     });
@@ -85,7 +86,7 @@ export abstract class ImageJob<P, C> extends Job<P> {
       const cost = estimateImageCost(result.usage, plan.size, plan.quality);
       await db.$transaction([
         ...this.onSuccess(ctx, { assetId: asset.id, cost, plan }),
-        db.generation.update({ where: { id: gen.id }, data: { status: "success", resultId: asset.id, cost, finishedAt: new Date() } }),
+        db.generation.update({ where: { id: gen.id }, data: { status: "success", resultId: asset.id, cost, progress: "100%", finishedAt: new Date() } }),
       ]);
       await this.afterSuccess(ctx, payload);
     } catch (err) {
