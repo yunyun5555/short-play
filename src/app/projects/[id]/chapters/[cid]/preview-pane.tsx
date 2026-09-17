@@ -12,7 +12,6 @@ import {
   generateVideos,
   generateVideoVersion,
   stopVideo,
-  getShotLiveProgress,
   setShotUsePrevLastFrame,
   setShotFrameQuality,
   uploadShotFrame,
@@ -225,7 +224,9 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const state = await getShotLiveProgress(shot.id);
+        const response = await fetch(`/api/shots/${encodeURIComponent(shot.id)}/progress`, { cache: "no-store", signal: AbortSignal.timeout(2500) });
+        if (!response.ok) throw new Error("progress unavailable");
+        const state = await response.json() as { progress: string; terminal: boolean };
         if (!active) return;
         setLiveProgress(state.progress);
         if (state.terminal) router.refresh();
