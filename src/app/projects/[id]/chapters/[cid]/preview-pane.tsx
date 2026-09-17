@@ -10,6 +10,7 @@ import {
   generateFrames,
   generateVideos,
   generateVideoVersion,
+  stopVideo,
   setShotUsePrevLastFrame,
   setShotFrameQuality,
   uploadShotFrame,
@@ -434,7 +435,23 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
             ) : (
               <Placeholder ratio={frameAspect(project.orientation)} label={isGenerating(shot.status) ? STATUS_LABEL[shot.status] : "VIDEO"} className={cx("mx-auto", previewMaxW(project.orientation))} />
             )}
-            {isGenerating(shot.status) && <Tape label={shot.status === "video_queued" ? "排队提交中" : `生成中 · ${latestVideoGen?.progress || "轮询 10s"} · 常见 5–60 分钟`} />}
+            {isGenerating(shot.status) && (
+              <div className="mt-2 flex items-center gap-2">
+                <Tape label={shot.status === "video_queued" ? "排队提交中" : `生成中 · ${latestVideoGen?.progress || "轮询 10s"} · 常见 5–60 分钟`} />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  title="同步到 ComfyUI：排队任务会移除；正在生成的任务会中断。H3 无法从中断处继续，只能重新提交。"
+                  onClick={() => {
+                    if (!confirm("暂停／停止这个视频任务？ComfyUI 中的该任务也会被中断或移出队列，已计算进度不能恢复。")) return;
+                    run(() => stopVideo(project.id, chapter.id, shot.id));
+                  }}
+                >
+                  暂停／停止
+                </Button>
+              </div>
+            )}
             {previzRuns && previzRuns.length > 0 && (
               <button onClick={() => setStage("frame")} className="mt-2 flex w-full items-center justify-between border border-dashed border-cinnabar/50 bg-cinnabar-wash px-2.5 py-1.5 text-[11px] text-cinnabar hover:bg-paper">
                 <span>这一镜有预演 · 到首帧页拖进度条截首帧</span>
