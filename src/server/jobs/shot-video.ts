@@ -6,7 +6,7 @@ import { Job, errText, type Writes } from "../core/job";
 import { absPath, saveAsset, saveAssetFromUrl, toDataUrl } from "../storage";
 import { concatVideos, cutAudioSegment, probe } from "../ffmpeg";
 import { computeBgmPlacements } from "../bgm";
-import { ENGINES, clampDuration, createVideoTask, estimateVideoCost, minSegmentSeconds, queryVideoTask, videoBackend, videoModelFor, type VideoEngine, type VideoVariant } from "../providers/video";
+import { ENGINES, cancelVideoTask, clampDuration, createVideoTask, estimateVideoCost, minSegmentSeconds, queryVideoTask, videoBackend, videoModelFor, type VideoEngine, type VideoVariant } from "../providers/video";
 import { segmentVideoPrompt, videoPrompt } from "../prompts";
 import { videoLineage, videoRouteOf } from "../lineage";
 import { FIRST_FRAME_REF, keyframeRef, orderKeyframes, segmentsOf, subjectRef, type RefImage } from "@/lib/keyframes";
@@ -225,6 +225,12 @@ export class VideoSubmitJob extends Job<SubmitPayload> {
         audios: req.audios,
         videos: req.videos,
       });
+      // 用户刚好在提交期间点了“暂停/停止”：外部任务已经拿到 id，也必须立刻同步中断，不能又把它写回生成中。
+      const stillRunning = await db.generation.findUnique({ where: { id: gen.id }, select: { status: true } });
+      if (stillRunning?.status !== "running") {
+        await cancelVideoTask(taskId).catch(() => undefined);
+        return;
+      }
       // 候选模式且已有当前视频：镜头状态不动，只推进这一版自己的状态
       const holdShot = Boolean(payload.keepCurrent) && Boolean(shot.videoId);
       await db.$transaction([
