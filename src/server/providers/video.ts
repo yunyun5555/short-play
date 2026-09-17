@@ -7,7 +7,7 @@
  */
 
 import { FAL_MIN_DURATION, falCreateVideoTask, falEstimateVideoCost, falQueryVideoTask, falVideoModel } from "./video-fal";
-import { comfyCreateVideoTask, comfyQueryVideoTask, comfyVideoModel } from "./video-comfy";
+import { comfyCancelVideoTask, comfyCreateVideoTask, comfyQueryVideoTask, comfyVideoModel } from "./video-comfy";
 
 /**
  * 视频后端：relay（中转站）| fal（fal.ai 的 H3 Max Turbo）。
@@ -168,6 +168,11 @@ export async function createVideoTask(input: VideoCreateInput): Promise<{ taskId
   const taskId = data.task_id ?? data.data?.task_id ?? data.id;
   if (taskId === undefined || taskId === null) throw new Error(`video create: 响应无 task_id: ${raw.slice(0, 300)}`);
   return { taskId: String(taskId), raw: data };
+}
+
+export async function cancelVideoTask(taskId: string): Promise<{ message: string }> {
+  if (taskId.startsWith("comfy::")) return comfyCancelVideoTask(taskId);
+  throw new Error("当前视频后端不支持从工作台直接停止；请在对应服务的任务队列中停止");
 }
 
 export async function queryVideoTask(taskId: string): Promise<VideoStatus> {
