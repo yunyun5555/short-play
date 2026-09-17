@@ -37,8 +37,9 @@ export function ProjectSettings({ project }: { project: Project }) {
   const [engine, setEngine] = useState(project.videoEngine ?? "h3");
   const [resolution, setResolution] = useState(project.videoResolution ?? "768P");
   const [quality, setQuality] = useState(project.imageQuality ?? "low");
+  const [orientation, setOrientation] = useState(project.orientation ?? "9:16");
   const cur = ENGINES.find((e) => e.id === engine)!;
-  const dirty = engine !== (project.videoEngine ?? "h3") || resolution !== (project.videoResolution ?? "768P");
+  const dirty = engine !== (project.videoEngine ?? "h3") || resolution !== (project.videoResolution ?? "768P") || orientation !== (project.orientation ?? "9:16");
 
   const shots = useMemo(() => project.chapters.flatMap((c) => c.shots), [project.chapters]);
   const seconds = shots.reduce((a, s) => a + Math.min(cur.max, Math.max(cur.min, s.duration)), 0);
@@ -50,6 +51,19 @@ export function ProjectSettings({ project }: { project: Project }) {
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-6 px-6 py-6 lg:grid-cols-[1fr_360px]">
       <Section title="视频引擎" aside={<Mono className="text-[10.5px] text-ink-3">改动只影响之后提交的生成</Mono>}>
         <div className="flex flex-col gap-3">
+          <div className="rounded-sm border border-line bg-panel p-3">
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="font-serif text-[14px] font-bold">成片画幅</span>
+              <Mono className="text-[10.5px] text-ink-3">会写入 ComfyUI ResolutionSelector</Mono>
+            </div>
+            <div className="flex gap-2">
+              {(["9:16", "16:9"] as const).map((value) => (
+                <button key={value} type="button" onClick={() => setOrientation(value)} className={cx("rounded-sm border px-3 py-1 font-mono text-[12px]", orientation === value ? "border-cinnabar bg-cinnabar text-paper" : "border-line bg-panel text-ink-2")}>
+                  {value} {value === "9:16" ? "竖屏" : "横屏"}
+                </button>
+              ))}
+            </div>
+          </div>
           {ENGINES.map((e) => (
             <label key={e.id} className={cx("flex cursor-pointer gap-3 rounded-sm border p-3", engine === e.id ? "border-cinnabar bg-paper" : "border-line")}>
               <input
@@ -103,7 +117,7 @@ export function ProjectSettings({ project }: { project: Project }) {
             <Mono className="text-[10.5px] text-ink-3">
               当前 {perSec.toFixed(4)} /秒{cur.discount && disc < 1 ? `（已含 ${disc} 折时段优惠）` : ""}
             </Mono>
-            <Button variant={dirty ? "primary" : "outline"} size="sm" disabled={!dirty || pending} onClick={() => act(() => updateVideoEngine(project.id, { videoEngine: engine, videoResolution: resolution }))}>
+            <Button variant={dirty ? "primary" : "outline"} size="sm" disabled={!dirty || pending} onClick={() => act(() => updateVideoEngine(project.id, { videoEngine: engine, videoResolution: resolution, orientation }))}>
               保存
             </Button>
           </div>
