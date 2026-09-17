@@ -304,15 +304,15 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
         </div>
       </header>
 
-      {isGenerating(shot.status) && (
+      {(
         <section className="sticky top-10 z-10 border-b border-line bg-paper p-3" aria-live="polite">
           <div className="flex items-center justify-between gap-2">
-            <span>{shot.status === "frame_generating" ? "首帧生成" : "视频生成"}</span>
-            <Button size="sm" disabled={pending} onClick={() => run(() => stopVideo(project.id, chapter.id, shot.id))}>
+            <span>{shot.status === "frame_generating" ? "首帧生成" : isGenerating(shot.status) ? "视频生成" : "生成状态"}</span>
+            <Button size="sm" disabled={pending || !isGenerating(shot.status)} onClick={() => run(() => stopVideo(project.id, chapter.id, shot.id))}>
               {pending ? "正在停止…" : "停止生成"}
             </Button>
           </div>
-          <p className="mt-2 break-words text-xs">{liveProgress || activeGeneration?.progress || "正在提交／等待 ComfyUI 实际进度"}</p>
+          <p className="mt-2 break-words text-xs">{isGenerating(shot.status) ? liveProgress || activeGeneration?.progress || "正在提交／等待 ComfyUI 实际进度" : "当前没有生成任务"}</p>
           <p className="mt-1 text-xs text-ink-2">停止会中断对应 ComfyUI 任务，不能从中断处续算。</p>
         </section>
       )}
