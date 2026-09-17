@@ -1,4 +1,3 @@
-import workflowTemplate from "./comfy-workflow.json";
 import type { VideoCreateInput, VideoStatus } from "./video";
 
 type ComfyWorkflow = Record<string, { inputs: Record<string, unknown>; class_type: string; _meta?: unknown }>;
@@ -15,7 +14,13 @@ function headers() {
 }
 
 function cloneWorkflow(): ComfyWorkflow {
-  return structuredClone(workflowTemplate) as ComfyWorkflow;
+  const raw = process.env.COMFYUI_WORKFLOW_JSON || "";
+  if (!raw) throw new Error("缺少 COMFYUI_WORKFLOW_JSON");
+  try {
+    return JSON.parse(raw) as ComfyWorkflow;
+  } catch {
+    throw new Error("COMFYUI_WORKFLOW_JSON 不是有效的 API 工作流 JSON");
+  }
 }
 
 function slots(files: string[]) {
