@@ -390,12 +390,15 @@ export class ShotService extends Service {
 
     const notes: string[] = [];
     for (const gen of gens) {
-      if (!gen.externalTaskId) continue;
-      const stopped = await cancelVideoTask(gen.externalTaskId);
-      notes.push(stopped.message);
+      const params = parseJson<{ segments?: Array<{ taskId?: string; status?: string }> }>(gen.params, {});
+      const taskIds = params.segments?.length ? params.segments.filter(s => s.status === "pending" && s.taskId).map(s => s.taskId!) : gen.externalTaskId ? [gen.externalTaskId] : [];
+      for (const taskId of taskIds) {
+        const stopped = await cancelVideoTask(taskId);
+        notes.push(stopped.message);
+      }
     }
 
-    if (!gens.length && !queuedSubmitIds.length) return { stopped: 0, message: "没有正在运行或排队的视频任务" };
+    if (!gens.length && !queuedSubmitIds.length && !["frame_generating", "video_generating", "video_queued"].includes(shot.status)) return { stopped: 0, message: "没有正在运行或排队的生成任务" };
 
     const fallback = shot.status === "frame_generating" || !shot.frameId ? "storyboard_approved" : shot.frameMode === "image" ? "frame_approved" : "storyboard_approved";
     const pollJobs = await this.db.job.findMany({ where: { type: "shot.video.poll", status: "queued" } });
