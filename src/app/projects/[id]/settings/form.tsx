@@ -10,13 +10,13 @@ const ENGINES = [
   {
     id: "h3",
     label: "MiniMax H3",
-    resolutions: ["768P", "1080P", "2K"],
+    resolutions: ["360P", "480P", "720P", "1080P", "2K"],
     min: 4,
     max: 15,
     base: 0.0986,
-    mult: { "768P": 1, "1080P": 2, "2K": 2, "4K": 2.6667 } as Record<string, number>,
+    mult: { "360P": 0.25, "480P": 0.4, "720P": 0.9, "1080P": 2.1, "2K": 3.7 } as Record<string, number>,
     discount: true,
-    note: "4–15 秒。首帧模式走首尾帧接口；直出模式可带人物三视图与声音样本。有时段折扣：0–9 点约三分之一价，18–22 点八折。平均出片约 3 分钟。",
+    note: "360P / 480P 适合快速测动作与分镜；720P 适合常规预览；1080P / 2K 适合成片。ComfyUI 会按画幅自动计算最接近的宽高。",
   },
   {
     id: "omni",
@@ -35,11 +35,12 @@ const ENGINES = [
 export function ProjectSettings({ project }: { project: Project }) {
   const { act, pending } = useAct();
   const [engine, setEngine] = useState(project.videoEngine ?? "h3");
-  const [resolution, setResolution] = useState(project.videoResolution ?? "768P");
+  const savedResolution = project.videoResolution === "768P" ? "720P" : (project.videoResolution ?? "720P");
+  const [resolution, setResolution] = useState(savedResolution);
   const [quality, setQuality] = useState(project.imageQuality ?? "low");
   const [orientation, setOrientation] = useState(project.orientation ?? "9:16");
   const cur = ENGINES.find((e) => e.id === engine)!;
-  const dirty = engine !== (project.videoEngine ?? "h3") || resolution !== (project.videoResolution ?? "768P") || orientation !== (project.orientation ?? "9:16");
+  const dirty = engine !== (project.videoEngine ?? "h3") || resolution !== savedResolution || orientation !== (project.orientation ?? "9:16");
 
   const shots = useMemo(() => project.chapters.flatMap((c) => c.shots), [project.chapters]);
   const seconds = shots.reduce((a, s) => a + Math.min(cur.max, Math.max(cur.min, s.duration)), 0);
