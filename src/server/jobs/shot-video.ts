@@ -460,7 +460,13 @@ export class VideoPollJob extends Job<PollPayload> {
     }
 
     if (st.state === "success" && st.resultUrl) {
-      const asset = await saveAssetFromUrl(st.resultUrl, { kind: "video", projectId: shot.chapter.projectId, folder: "videos" });
+      let asset;
+      try {
+        asset = await saveAssetFromUrl(st.resultUrl, { kind: "video", projectId: shot.chapter.projectId, folder: "videos" });
+      } catch (error) {
+        await this.fail(gen.id, shot.id, fallback, `ComfyUI 已生成，但保存视频失败：${errText(error).raw}`, "视频保存失败，请查看生成记录后重试");
+        return;
+      }
       // 中转站在状态里回实扣金额；fal 不回，按价目表估一个记进去，否则成本统计全是 0
       const p = parseJson<{ engine?: VideoEngine; variant?: VideoVariant; duration?: number; resolution?: string; inputHash?: string; keepCurrent?: boolean }>(gen.params, {});
       const cost = st.cost > 0 ? st.cost : estimateVideoCost(p.duration ?? shot.duration, p.engine ?? "h3", p.resolution ?? "768P", p.variant);
