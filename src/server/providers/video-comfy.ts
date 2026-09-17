@@ -103,18 +103,38 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
   return { taskId: `comfy::${d.prompt_id}`, raw: d };
 }
 
-function findVideo(value: unknown): { filename: string; subfolder?: string; type?: string } | null {
+type ComfyOutputFile = { filename: string; subfolder?: string; type?: string };
+
+function findVideo(value: unknown): ComfyOutputFile | null {
   if (!value || typeof value !== "object") return null;
   if (Array.isArray(value)) {
     for (const item of value) { const found = findVideo(item); if (found) return found; }
     return null;
   }
   const obj = value as Record<string, unknown>;
-  if (typeof obj.filename === "string" && /\.mp4$/i.test(obj.filename)) {
-    return { filename: obj.filename, subfolder: typeof obj.subfolder === "string" ? obj.subfolder : "", type: typeof obj.type === "string" ? obj.type : "output" };
+  const filename = typeof obj.filename === "string" ? obj.filename : "";
+  // VHS_VideoCombine 通常返回 mp4；不同版本也可能只在 format/mime 里标记视频格式。
+  const meta = [obj.format, obj.mime, obj.content_type, obj.media_type].filter((v): v is string => typeof v === "string").join(" ");
+  const isVideo = /\.(mp4|webm|mov|mkv|avi|m4v|gif)$/i.test(filename)
+    || /(^|[\\/\s-])(video|h26[45]|hevc|mpeg|webm|gif)($|[\\/\s-])/i.test(meta);
+  if (filename && isVideo) {
+    return { filename, subfolder: typeof obj.subfolder === "string" ? obj.subfolder : "", type: typeof obj.type === "string" ? obj.type : "output" };
   }
   for (const item of Object.values(obj)) { const found = findVideo(item); if (found) return found; }
   return null;
+}
+
+function outputSummary(value: unknown) {
+  const files: string[] = [];
+  const visit = (item: unknown) => {
+    if (!item || typeof item !== "object") return;
+    if (Array.isArray(item)) { item.forEach(visit); return; }
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.filename === "string") files.push(obj.filename);
+    Object.values(obj).forEach(visit);
+  };
+  visit(value);
+  return files.length ? files.slice(0, 8).join(", ") : "没有可下载的输出文件";
 }
 
 async function queueProgress(base: string, promptId: string) {
@@ -132,6 +152,43 @@ async function queueProgress(base: string, promptId: string) {
   }
 }
 
+export async function comfyCancelVideoTask(taskId: string): Promise<{ message: string }> {
+  if (!taskId.startsWith("comfy::")) throw new Error("不是 ComfyUI 视频任务");
+  const base = baseUrl();
+  const promptId = taskId.slice("comfy::".length);
+  const queueRes = await fetch(`${base}/queue`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
+  if (!queueRes.ok) throw new Error(`无法读取 ComfyUI 队列：${queueRes.status}`);
+  const queue = await queueRes.json() as { queue_running?: unknown[]; queue_pending?: unknown[] };
+  const running = queue.queue_running || [];
+  const pending = queue.queue_pending || [];
+  const isRunning = running.some((item) => Array.isArray(item) && String(item[1]) === promptId);
+  const isPending = pending.some((item) => Array.isArray(item) && String(item[1]) === promptId);
+
+  if (isPending) {
+    const res = await fetch(`${base}/queue`, {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify({ delete: [promptId] }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`ComfyUI 未能移除排队任务：${res.status}`);
+    return { message: "已从 ComfyUI 队列移除" };
+  }
+
+  if (isRunning) {
+    const res = await fetch(`${base}/interrupt`, {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`ComfyUI 未能中止当前任务：${res.status}`);
+    return { message: "已向 ComfyUI 发送中止命令" };
+  }
+
+  return { message: "ComfyUI 队列中已找不到该任务，工作台已停止轮询" };
+}
+
 export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> {
   const promptId = taskId.slice("comfy::".length);
   const base = baseUrl();
@@ -144,6 +201,19 @@ export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> 
   const status = item.status?.status_str || "";
   if (status === "error") return { taskId, state: "failed", isFinal: true, progress: "", resultUrl: "", error: JSON.stringify(item.status?.messages || "ComfyUI 工作流执行失败"), cost: 0, raw: item };
   const video = findVideo(item.outputs);
+  // 绝不能把 ComfyUI 已经完成但没有视频产物的任务继续伪装成“生成中”。
+  if (!video && ["success", "completed"].includes(status.toLowerCase())) {
+    return {
+      taskId,
+      state: "failed",
+      isFinal: true,
+      progress: "",
+      resultUrl: "",
+      error: `ComfyUI 已结束，但工作流没有输出视频文件（${outputSummary(item.outputs)}）。请确认 VHS_VideoCombine / 保存视频节点已连接并启用。`,
+      cost: 0,
+      raw: item,
+    };
+  }
   if (!video) return { taskId, state: "running", isFinal: false, progress: status || "ComfyUI 生成中", resultUrl: "", error: "", cost: 0, raw: item };
   const q = new URLSearchParams({ filename: video.filename, subfolder: video.subfolder || "", type: video.type || "output" });
   return { taskId, state: "success", isFinal: true, progress: "100%", resultUrl: `${base}/view?${q}`, error: "", cost: 0, raw: item };
