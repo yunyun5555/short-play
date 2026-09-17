@@ -450,8 +450,12 @@ export class VideoPollJob extends Job<PollPayload> {
         await this.fail(gen.id, shot.id, fallback, "超过 90 分钟仍未完成，停止轮询", "视频任务超时，请重新提交");
         return;
       }
-      await db.generation.update({ where: { id: gen.id }, data: { progress: st.progress || st.state } });
-      await enqueue("shot.video.poll", { generationId: gen.id, startedAt: started }, { delayMs: VIDEO_POLL_MS });
+      // ComfyUI 的 WebSocket 进度会在 st.progress 里返回实际 value/max；秒数按任务真正提交时刻计算。
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const progress = st.progress ? `已运行 ${elapsedSeconds}s · ${st.progress}` : `已运行 ${elapsedSeconds}s · ${st.state}`;
+      await db.generation.update({ where: { id: gen.id }, data: { progress } });
+      // ComfyUI 任务两秒同步一次，使真实百分比和已运行秒数能及时显示；其它后端继续按原频率。
+      await enqueue("shot.video.poll", { generationId: gen.id, startedAt: started }, { delayMs: gen.externalTaskId.startsWith("comfy::") ? 2_000 : VIDEO_POLL_MS });
       return;
     }
 
