@@ -1,5 +1,6 @@
 import { enqueue } from "../jobs";
 import { cancelVideoTask, minSegmentSeconds } from "../providers/video";
+import { comfyQueryVideoTask } from "../providers/video-comfy";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -61,6 +62,19 @@ export class ChapterService extends Service {
  * 改内容会把镜头退回草稿，但**不会删除任何已有产物**——产物是否还新鲜由输入指纹判断。
  */
 export class ShotService extends Service {
+  async liveProgress(shotId: string) {
+    const gen = await this.db.generation.findFirst({ where: { shotId, status: "running", kind: { in: ["frame", "video", "keyframe"] } }, orderBy: { createdAt: "desc" } });
+    if (!gen?.externalTaskId?.startsWith("comfy::")) return { progress: gen?.progress || "等待提交 ComfyUI", terminal: !gen };
+    const state = await comfyQueryVideoTask(gen.externalTaskId, gen.kind === "video" ? "video" : "frame");
+    if (state.isFinal && state.state === "failed") {
+      await this.db.$transaction(async (tx) => {
+        const changed = await tx.generation.updateMany({ where: { id: gen.id, status: "running" }, data: { status: "failed", error: state.error, progress: "已结束", finishedAt: new Date() } });
+        if (changed.count) await tx.shot.update({ where: { id: shotId }, data: { status: gen.kind === "video" ? "frame_approved" : "storyboard_approved", reviewNote: state.error } });
+      });
+    }
+    return { progress: state.isFinal ? state.state === "success" ? "ComfyUI 已完成，正在保存产物" : state.error : state.progress, terminal: state.isFinal };
+  }
+
   /** 编辑内容。改动会把状态退回相应闸门之前，让人重新过一遍眼。 */
   async update(shotId: string, data: ShotEdit) {
     const shot = await this.db.shot.findUniqueOrThrow({ where: { id: shotId } });
@@ -364,10 +378,10 @@ export class ShotService extends Service {
   async stopVideo(shotId: string) {
     const shot = await this.db.shot.findUniqueOrThrow({ where: { id: shotId } });
     const gens = await this.db.generation.findMany({
-      where: { shotId, kind: "video", status: { in: ["queued", "running"] } },
+      where: { shotId, kind: { in: ["frame", "keyframe", "video"] }, status: { in: ["queued", "running"] } },
       orderBy: { createdAt: "desc" },
     });
-    const submitJobs = await this.db.job.findMany({ where: { type: "shot.video.submit", status: "queued" } });
+    const submitJobs = await this.db.job.findMany({ where: { type: { in: ["shot.video.submit", "shot.frame"] }, status: "queued" } });
     const queuedSubmitIds = submitJobs
       .filter((j) => {
         try { return JSON.parse(j.payload).shotId === shotId; } catch { return false; }
@@ -383,7 +397,7 @@ export class ShotService extends Service {
 
     if (!gens.length && !queuedSubmitIds.length) return { stopped: 0, message: "没有正在运行或排队的视频任务" };
 
-    const fallback = shot.frameMode === "image" ? "frame_approved" : "storyboard_approved";
+    const fallback = shot.status === "frame_generating" || !shot.frameId ? "storyboard_approved" : shot.frameMode === "image" ? "frame_approved" : "storyboard_approved";
     const pollJobs = await this.db.job.findMany({ where: { type: "shot.video.poll", status: "queued" } });
     const genIds = new Set(gens.map((g) => g.id));
     const queuedPollIds = pollJobs
