@@ -358,6 +358,12 @@ export async function generateVideoVersion(projectId: string, chapterId: string,
   revalidatePath(paths.chapter(projectId, chapterId));
 }
 
+export async function stopVideo(projectId: string, chapterId: string, shotId: string) {
+  const result = await shots.stopVideo(shotId);
+  revalidatePath(paths.chapter(projectId, chapterId));
+  return result;
+}
+
 export async function regenerateVideo(projectId: string, chapterId: string, shotId: string, instruction: string) {
   await shots.regenerateVideo(shotId, instruction);
   revalidatePath(paths.chapter(projectId, chapterId));
