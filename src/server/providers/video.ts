@@ -7,15 +7,19 @@
  */
 
 import { FAL_MIN_DURATION, falCreateVideoTask, falEstimateVideoCost, falQueryVideoTask, falVideoModel } from "./video-fal";
+import { comfyCreateVideoTask, comfyQueryVideoTask, comfyVideoModel } from "./video-comfy";
 
 /**
  * 视频后端：relay（中转站）| fal（fal.ai 的 H3 Max Turbo）。
  * 任务代码只认这个文件导出的 createVideoTask / queryVideoTask / videoModelFor / estimateVideoCost，
  * 切后端只改 VIDEO_PROVIDER 这一个环境变量。
  */
-export type VideoBackend = "relay" | "fal";
+export type VideoBackend = "relay" | "fal" | "comfy";
 export function videoBackend(): VideoBackend {
-  return (process.env.VIDEO_PROVIDER || "relay") === "fal" ? "fal" : "relay";
+  const provider = process.env.VIDEO_PROVIDER || "relay";
+  if (provider === "fal") return "fal";
+  if (provider === "comfy") return "comfy";
+  return "relay";
 }
 
 export type VideoVariant = "t2v" | "i2v" | "ref";
@@ -83,13 +87,14 @@ function cfg() {
 }
 
 export function videoModelFor(variant: VideoVariant, engine: VideoEngine = "h3") {
+  if (videoBackend() === "comfy" && engine !== "omni") return comfyVideoModel();
   if (videoBackend() === "fal" && engine !== "omni") return falVideoModel(variant);
   return engine === "omni" ? cfg().omniModel : cfg().models[variant];
 }
 
 /** 分段路线每段的最短时长：fal 的 H3 是 5 秒，中转站 4 秒。中间关键帧的时间点必须让每一段都不短于它 */
 export function minSegmentSeconds() {
-  return videoBackend() === "fal" ? FAL_MIN_DURATION : ENGINES.h3.minDuration;
+  return videoBackend() === "fal" || videoBackend() === "comfy" ? FAL_MIN_DURATION : ENGINES.h3.minDuration;
 }
 
 /** 各引擎的时长上下限 */
@@ -133,6 +138,7 @@ export function buildVideoRequest(input: VideoCreateInput) {
 
 /** 下单前按引擎与档位估算费用，用于界面提示 */
 export function estimateVideoCost(seconds: number, engine: VideoEngine, resolution: string, variant?: VideoVariant) {
+  if (videoBackend() === "comfy" && engine !== "omni") return 0;
   if (videoBackend() === "fal" && engine !== "omni") return falEstimateVideoCost(seconds, resolution, variant);
   const d = clampDuration(seconds, engine);
   if (engine === "omni") {
@@ -146,6 +152,7 @@ export function estimateVideoCost(seconds: number, engine: VideoEngine, resoluti
 }
 
 export async function createVideoTask(input: VideoCreateInput): Promise<{ taskId: string; raw: unknown }> {
+  if (videoBackend() === "comfy" && input.engine !== "omni") return comfyCreateVideoTask(input);
   if (videoBackend() === "fal" && input.engine !== "omni") return falCreateVideoTask(input);
   const c = cfg();
   const body = buildVideoRequest(input);
@@ -166,6 +173,7 @@ export async function createVideoTask(input: VideoCreateInput): Promise<{ taskId
 export async function queryVideoTask(taskId: string): Promise<VideoStatus> {
   // fal 的 taskId 带 "endpoint::request_id" 前缀，靠这个分流，不依赖当前环境变量——
   // 中途切后端时，已经在跑的任务仍然能按它当初提交的那家去查
+  if (taskId.startsWith("comfy::")) return comfyQueryVideoTask(taskId);
   if (taskId.includes("::")) return falQueryVideoTask(taskId);
   const c = cfg();
   const res = await fetch(`${c.baseUrl}/v1/media/status?task_id=${encodeURIComponent(taskId)}`, {
