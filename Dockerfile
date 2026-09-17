@@ -21,14 +21,13 @@ FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 # ffmpeg（含 libass）+ 中文字体，用于成片合成与字幕烧录
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk openssl ca-certificates gosu && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/node_modules ./node_modules
 RUN mkdir -p /data/storage && chown -R node:node /data /app
-USER node
 EXPOSE 3000
 # 启动前把 schema 同步到 /data/app.db（首次建库、后续加字段都靠它）
-CMD ["sh", "-c", "node node_modules/prisma/build/index.js db push --skip-generate --schema=prisma/schema.prisma && node server.js"]
+CMD ["sh", "-c", "mkdir -p /data/storage && chown -R node:node /data && exec gosu node sh -c \"node node_modules/prisma/build/index.js db push --skip-generate --schema=prisma/schema.prisma && node server.js\""]
