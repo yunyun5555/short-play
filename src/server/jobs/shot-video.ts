@@ -452,8 +452,8 @@ export class VideoPollJob extends Job<PollPayload> {
       }
       // ComfyUI 的 WebSocket 进度会在 st.progress 里返回实际 value/max；秒数按任务真正提交时刻计算。
       const elapsedSeconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
-      const progress = st.progress ? `已运行 ${elapsedSeconds} 秒 · ${st.progress}` : `已运行 ${elapsedSeconds} 秒 · ${st.state}`;
-      await db.generation.update({ where: { id: gen.id }, data: { progress } });
+      const progress = gen.externalTaskId.startsWith("comfy::") ? st.progress : st.progress ? `已运行 ${elapsedSeconds} 秒 · ${st.progress}` : `已运行 ${elapsedSeconds} 秒 · ${st.state}`;
+      await db.generation.updateMany({ where: { id: gen.id, status: "running" }, data: { progress } });
       // ComfyUI 任务两秒同步一次，使真实百分比和已运行秒数能及时显示；其它后端继续按原频率。
       await enqueue("shot.video.poll", { generationId: gen.id, startedAt: started }, { delayMs: gen.externalTaskId.startsWith("comfy::") ? 2_000 : VIDEO_POLL_MS });
       return;
@@ -467,7 +467,7 @@ export class VideoPollJob extends Job<PollPayload> {
       // 候选模式且镜头已有采用的视频：只入版本库，不动当前指针；用户在版本面板里自己挑
       const hold = Boolean(p.keepCurrent) && Boolean(shot.videoId);
       await db.$transaction([
-        db.generation.update({ where: { id: gen.id }, data: { status: "success", resultId: asset.id, cost, progress: "100%", finishedAt: new Date() } }),
+        db.generation.update({ where: { id: gen.id, status: "running" }, data: { status: "success", resultId: asset.id, cost, progress: "100%", finishedAt: new Date() } }),
         db.shot.update({
           where: { id: shot.id },
           data: hold
@@ -556,7 +556,7 @@ export class VideoPollJob extends Job<PollPayload> {
 
   private async fail(genId: string, shotId: string, status: string, genError: string, note: string) {
     const writes: Writes = [
-      db.generation.update({ where: { id: genId }, data: { status: "failed", error: genError, finishedAt: new Date() } }),
+      db.generation.update({ where: { id: genId, status: "running" }, data: { status: "failed", error: genError, finishedAt: new Date() } }),
       db.shot.update({ where: { id: shotId }, data: { status, reviewNote: note } }),
     ];
     await db.$transaction(writes);
