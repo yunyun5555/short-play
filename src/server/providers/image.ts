@@ -8,6 +8,7 @@
  * 而超时是最亏的失败方式——钱照付，图拿不到。宁可多等三分钟。
  */
 import { falEstimateImageCost, falGenerateImage, falGenerateImageWithRefs, type ImageQuality } from "./image-fal";
+import { comfyGenerateFrame } from "./video-comfy";
 
 const IMAGE_TIMEOUT_MS = Number(process.env.IMAGE_TIMEOUT_MS || 8 * 60 * 1000);
 
@@ -16,9 +17,12 @@ const IMAGE_TIMEOUT_MS = Number(process.env.IMAGE_TIMEOUT_MS || 8 * 60 * 1000);
  * 四个出图任务都只认这个文件导出的 generateImageWithRefs / estimateImageCost，
  * 切后端只改这一个环境变量，任务代码一行不动。
  */
-export type ImageBackend = "relay" | "fal";
+export type ImageBackend = "relay" | "fal" | "comfy";
 export function imageBackend(): ImageBackend {
-  return (process.env.IMAGE_PROVIDER || "relay") === "fal" ? "fal" : "relay";
+  const provider = process.env.IMAGE_PROVIDER || "relay";
+  if (provider === "comfy") return "comfy";
+  if (provider === "fal") return "fal";
+  return "relay";
 }
 
 export interface ImageRef {
@@ -75,6 +79,7 @@ async function parseImageResponse(res: Response): Promise<ImageResult> {
 
 /** 纯文生图 */
 export async function generateImage(opts: { prompt: string; size: string; quality?: ImageQuality }): Promise<ImageResult> {
+  if (imageBackend() === "comfy") return comfyGenerateFrame({ prompt: opts.prompt, refs: [] });
   if (imageBackend() === "fal") return falGenerateImage(opts);
   const c = cfg();
   const body: Record<string, unknown> = { model: c.model, prompt: opts.prompt, size: opts.size, n: 1 };
@@ -96,6 +101,7 @@ export async function generateImageWithRefs(opts: {
   refs: ImageRef[];
   quality?: ImageQuality;
 }): Promise<ImageResult> {
+  if (imageBackend() === "comfy") return comfyGenerateFrame({ prompt: opts.prompt, refs: opts.refs });
   if (imageBackend() === "fal") return falGenerateImageWithRefs(opts);
   if (opts.refs.length === 0) return generateImage(opts);
   const c = cfg();
@@ -124,6 +130,7 @@ export async function generateImageWithRefs(opts: {
  * relay：按 gpt-image-2 官方 token 价粗估；fal：没有 usage，按官方价目表查尺寸×档位。
  */
 export function estimateImageCost(usage?: { input: number; output: number }, size?: string, quality?: ImageQuality) {
+  if (imageBackend() === "comfy") return 0;
   if (imageBackend() === "fal" && size) return falEstimateImageCost(size, quality);
   if (!usage) return 0.04;
   return Math.round((usage.input * 0.000005 + usage.output * 0.00004) * 1000) / 1000;
