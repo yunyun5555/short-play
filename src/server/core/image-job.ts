@@ -93,7 +93,7 @@ export abstract class ImageJob<P, C> extends Job<P> {
       const cost = estimateImageCost(result.usage, plan.size, plan.quality);
       await db.$transaction([
         ...this.onSuccess(ctx, { assetId: asset.id, cost, plan }),
-        db.generation.update({ where: { id: gen.id }, data: { status: "success", resultId: asset.id, cost, progress: "100%", finishedAt: new Date() } }),
+        db.generation.update({ where: { id: gen.id, status: "running" }, data: { status: "success", resultId: asset.id, cost, progress: "100%", finishedAt: new Date() } }),
       ]);
       await this.afterSuccess(ctx, payload);
     } catch (err) {
