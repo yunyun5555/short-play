@@ -12,6 +12,7 @@ import {
   generateVideos,
   generateVideoVersion,
   stopVideo,
+  getShotLiveProgress,
   setShotUsePrevLastFrame,
   setShotFrameQuality,
   uploadShotFrame,
@@ -217,6 +218,25 @@ export function PreviewPane({ shot, ...rest }: { shot: Shot | null } & Omit<Prev
 function PreviewBody({ shot, project, chapter, placement, stageRequest }: PreviewProps) {
   const { act: run, pending } = useAct();
   const router = useRouter();
+  const [liveProgress, setLiveProgress] = useState("");
+  useEffect(() => {
+    if (!isGenerating(shot.status)) { setLiveProgress(""); return; }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const state = await getShotLiveProgress(shot.id);
+        if (!active) return;
+        setLiveProgress(state.progress);
+        if (state.terminal) router.refresh();
+      } catch {
+        if (active) setLiveProgress("连接中断：暂时无法确认 ComfyUI 状态，正在重连");
+      }
+      if (active) timer = setTimeout(poll, 500);
+    }
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, [router, shot.id, shot.status]);
   const [stage, setStage] = useState<Stage>(stageRequest?.stage ?? defaultStage(shot.status));
   useEffect(() => {
     if (stageRequest) setStage(stageRequest.stage);
@@ -224,7 +244,7 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
   // 生成期间主动拉取服务端最新 Generation：ComfyUI 的真实百分比与已运行秒数无需手动刷新。
   useEffect(() => {
     if (!isGenerating(shot.status)) return;
-    const timer = window.setInterval(() => router.refresh(), 2_000);
+    const timer = window.setInterval(() => router.refresh(), 1_000);
     return () => window.clearInterval(timer);
   }, [router, shot.id, shot.status]);
   // 这一镜有没有可截帧的预演：有就在首帧页最上面摆截帧器，并在别的页签给个入口
@@ -248,7 +268,7 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
     return { name: ch?.name ?? "?", tag: c.personaTag, url: persona?.sheetUrl ?? null };
   });
   const ids = [shot.id];
-  const latestVideoGen = shot.generations?.find((g) => g.kind === "video");
+  const activeGeneration = shot.generations?.find((g) => g.status === "running" || g.status === "queued");
   const fresh = shot.freshness;
   // 上游变了但自身输入没动：视频看首帧
   const videoUpstream = fresh?.frame === "stale";
@@ -282,6 +302,19 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
           <StatusStamp status={shot.status} />
         </div>
       </header>
+
+      {isGenerating(shot.status) && (
+        <section className="sticky top-10 z-10 border-b border-line bg-paper p-3" aria-live="polite">
+          <div className="flex items-center justify-between gap-2">
+            <span>{shot.status === "frame_generating" ? "首帧生成" : "视频生成"}</span>
+            <Button size="sm" disabled={pending} onClick={() => run(() => stopVideo(project.id, chapter.id, shot.id))}>
+              {pending ? "正在停止…" : "停止生成"}
+            </Button>
+          </div>
+          <p className="mt-2 break-words text-xs">{liveProgress || activeGeneration?.progress || "正在提交／等待 ComfyUI 实际进度"}</p>
+          <p className="mt-1 text-xs text-ink-2">停止会中断对应 ComfyUI 任务，不能从中断处续算。</p>
+        </section>
+      )}
 
       {canvas && <ShotCanvas shot={shot} project={project} chapter={chapter} onClose={() => setCanvas(false)} />}
       {timeline && <TimelinePanel shot={shot} project={project} chapter={chapter} onClose={() => setTimeline(false)} />}
@@ -445,7 +478,7 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
             )}
             {isGenerating(shot.status) && (
               <div className="mt-2 flex items-center gap-2">
-                <Tape label={shot.status === "video_queued" ? "排队提交中" : `生成中 · ${latestVideoGen?.progress || "轮询 10s"} · 常见 5–60 分钟`} />
+                <Tape label={activeGeneration?.progress || "等待 ComfyUI 实际进度"} />
                 <Button
                   size="sm"
                   variant="ghost"
@@ -712,4 +745,3 @@ export function Actions({
 }
 
 /* ================================================================== */
-
