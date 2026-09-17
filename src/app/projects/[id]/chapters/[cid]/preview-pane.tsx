@@ -417,7 +417,7 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
                 <Placeholder ratio={frameAspect(project.orientation)} label={shot.status === "frame_generating" ? "生成中" : "FIRST FRAME · 拖图进来"} />
               )}
             </DropZone>
-            {shot.status === "frame_generating" && <Tape label="gpt-image-2.5 · 约 40–90 秒" />}
+            {shot.status === "frame_generating" && <p className="mt-2 text-xs text-indigo">{liveProgress || activeGeneration?.progress || "等待 ComfyUI 实际进度"}</p>}
             <div className="mt-1.5 flex justify-end gap-1">
               <Button size="sm" variant="ghost" disabled={pending} title="不经过生图：直接截上一镜成片的最后一帧当本镜首帧，视频从那个画面接着拍" onClick={() => run(() => useShotPrevLastFrame(project.id, chapter.id, shot.id))}>
                 用上一镜末帧
@@ -478,7 +478,7 @@ function PreviewBody({ shot, project, chapter, placement, stageRequest }: Previe
             )}
             {isGenerating(shot.status) && (
               <div className="mt-2 flex items-center gap-2">
-                <Tape label={activeGeneration?.progress || "等待 ComfyUI 实际进度"} />
+                <p className="text-xs text-indigo">{liveProgress || activeGeneration?.progress || "等待 ComfyUI 实际进度"}</p>
                 <Button
                   size="sm"
                   variant="ghost"
