@@ -1,5 +1,5 @@
 import { enqueue } from "../jobs";
-import { minSegmentSeconds } from "../providers/video";
+import { cancelVideoTask, minSegmentSeconds } from "../providers/video";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -358,6 +358,52 @@ export class ShotService extends Service {
       n += 1;
     }
     return n;
+  }
+
+  /** 停止本镜的 ComfyUI 视频任务；只中止匹配的 prompt，不会清空别的 ComfyUI 任务。 */
+  async stopVideo(shotId: string) {
+    const shot = await this.db.shot.findUniqueOrThrow({ where: { id: shotId } });
+    const gens = await this.db.generation.findMany({
+      where: { shotId, kind: "video", status: { in: ["queued", "running"] } },
+      orderBy: { createdAt: "desc" },
+    });
+    const submitJobs = await this.db.job.findMany({ where: { type: "shot.video.submit", status: "queued" } });
+    const queuedSubmitIds = submitJobs
+      .filter((j) => {
+        try { return JSON.parse(j.payload).shotId === shotId; } catch { return false; }
+      })
+      .map((j) => j.id);
+
+    const notes: string[] = [];
+    for (const gen of gens) {
+      if (!gen.externalTaskId) continue;
+      const stopped = await cancelVideoTask(gen.externalTaskId);
+      notes.push(stopped.message);
+    }
+
+    if (!gens.length && !queuedSubmitIds.length) return { stopped: 0, message: "没有正在运行或排队的视频任务" };
+
+    const fallback = shot.frameMode === "image" ? "frame_approved" : "storyboard_approved";
+    const pollJobs = await this.db.job.findMany({ where: { type: "shot.video.poll", status: "queued" } });
+    const genIds = new Set(gens.map((g) => g.id));
+    const queuedPollIds = pollJobs
+      .filter((j) => {
+        try { return genIds.has(JSON.parse(j.payload).generationId); } catch { return false; }
+      })
+      .map((j) => j.id);
+
+    await this.db.$transaction([
+      ...(gens.length
+        ? [this.db.generation.updateMany({
+            where: { id: { in: gens.map((g) => g.id) } },
+            data: { status: "failed", progress: "已停止", error: "用户停止生成", finishedAt: new Date() },
+          })]
+        : []),
+      ...(queuedSubmitIds.length ? [this.db.job.updateMany({ where: { id: { in: queuedSubmitIds } }, data: { status: "failed", error: "用户停止生成" } })] : []),
+      ...(queuedPollIds.length ? [this.db.job.updateMany({ where: { id: { in: queuedPollIds } }, data: { status: "failed", error: "用户停止生成" } })] : []),
+      this.db.shot.update({ where: { id: shotId }, data: { status: fallback, reviewNote: notes.join("；") || "已停止视频生成" } }),
+    ]);
+    return { stopped: gens.length + queuedSubmitIds.length, message: notes.join("；") || "已停止视频生成" };
   }
 
   /**
