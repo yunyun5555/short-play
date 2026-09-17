@@ -46,6 +46,13 @@ function bindReferenceImages(wf: ComfyWorkflow, files: string[]) {
   attachImages(wf, "528", first.length ? first : remaining.slice(0, 1), "903");
 }
 
+function applyVideoSettings(wf: ComfyWorkflow, input: VideoCreateInput) {
+  // 工作台项目设置中的清晰度直接控制 ResolutionSelector。
+  const mp: Record<string, number> = { "768P": 0.8, "1080P": 1.6, "2K": 3.2 };
+  wf["150"].inputs.megapixels = mp[input.resolution || "1080P"] || 1.6;
+  wf["150"].inputs.aspect_ratio = input.aspectRatio === "9:16" ? "9:16 (Portrait)" : "16:9 (Widescreen)";
+}
+
 async function uploadImage(base: string, dataUrl: string, index: number) {
   if (!dataUrl.startsWith("data:")) return dataUrl;
   const comma = dataUrl.indexOf(",");
@@ -72,8 +79,7 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
   const wf = cloneWorkflow();
   wf["147"].inputs.value = input.prompt;
   wf["141"].inputs.value = Math.max(5, Math.min(15, Math.round(input.duration)));
-  if (input.aspectRatio === "9:16") wf["150"].inputs.aspect_ratio = "9:16 (Portrait)";
-
+  applyVideoSettings(wf, input);
   bindReferenceImages(wf, files);
 
   const res = await fetch(`${base}/prompt`, {
@@ -103,6 +109,21 @@ function findVideo(value: unknown): { filename: string; subfolder?: string; type
   return null;
 }
 
+async function queueProgress(base: string, promptId: string) {
+  try {
+    const res = await fetch(`${base}/queue`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return "ComfyUI 队列中";
+    const queue = await res.json() as { queue_running?: unknown[]; queue_pending?: unknown[] };
+    const running = queue.queue_running || [];
+    const pending = queue.queue_pending || [];
+    if (running.some((item) => Array.isArray(item) && String(item[1]) === promptId)) return "ComfyUI 正在生成";
+    const index = pending.findIndex((item) => Array.isArray(item) && String(item[1]) === promptId);
+    return index >= 0 ? `ComfyUI 排队中，前方 ${index} 个任务` : "ComfyUI 队列中";
+  } catch {
+    return "ComfyUI 队列中";
+  }
+}
+
 export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> {
   const promptId = taskId.slice("comfy::".length);
   const base = baseUrl();
@@ -111,7 +132,7 @@ export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> 
   if (!res.ok) throw new Error(`ComfyUI 查询 ${res.status}: ${raw.slice(0, 300)}`);
   const history = JSON.parse(raw) as Record<string, { status?: { status_str?: string; messages?: unknown[] }; outputs?: unknown }>;
   const item = history[promptId];
-  if (!item) return { taskId, state: "running", isFinal: false, progress: "ComfyUI 队列中/生成中", resultUrl: "", error: "", cost: 0, raw: history };
+  if (!item) return { taskId, state: "running", isFinal: false, progress: await queueProgress(base, promptId), resultUrl: "", error: "", cost: 0, raw: history };
   const status = item.status?.status_str || "";
   if (status === "error") return { taskId, state: "failed", isFinal: true, progress: "", resultUrl: "", error: JSON.stringify(item.status?.messages || "ComfyUI 工作流执行失败"), cost: 0, raw: item };
   const video = findVideo(item.outputs);
