@@ -6,13 +6,14 @@ export async function POST(req: Request) {
   const form = await req.formData();
   const password = String(form.get("password") ?? "");
   const next = String(form.get("next") ?? "/");
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL || req.url;
   if (password !== process.env.APP_PASSWORD) {
-    const url = new URL("/login", req.url);
+    const url = new URL("/login", publicBaseUrl);
     url.searchParams.set("error", "1");
     url.searchParams.set("next", next);
     return NextResponse.redirect(url, { status: 303 });
   }
-  const res = NextResponse.redirect(new URL(next.startsWith("/") ? next : "/", req.url), { status: 303 });
+  const res = NextResponse.redirect(new URL(next.startsWith("/") && !next.startsWith("//") ? next : "/", publicBaseUrl), { status: 303 });
   res.cookies.set(AUTH_COOKIE, await expectedToken(), {
     httpOnly: true,
     sameSite: "lax",
@@ -24,7 +25,8 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const res = NextResponse.redirect(new URL("/login", req.url), { status: 303 });
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL || req.url;
+  const res = NextResponse.redirect(new URL("/login", publicBaseUrl), { status: 303 });
   res.cookies.set(AUTH_COOKIE, "", { path: "/", maxAge: 0 });
   return res;
 }
