@@ -10,6 +10,8 @@ type ComfyLiveProgress = {
   node?: string;
   stage?: string;
   updatedAt: number;
+  startedAt?: number;
+  terminalError?: string;
 };
 
 const comfyProgress = new Map<string, ComfyLiveProgress>();
@@ -40,7 +42,7 @@ function progressLabel(promptId: string) {
   if (!p) return "";
   if (typeof p.percent === "number") {
     const steps = typeof p.value === "number" && typeof p.max === "number" ? `（${p.value}/${p.max}）` : "";
-    return `H3 采样 ${p.percent}%${steps}`;
+    return `当前节点 ${p.node || ""} 进度 ${p.percent}%${steps}`;
   }
   return p.stage || (p.node ? `正在执行节点 ${p.node}` : "");
 }
@@ -61,13 +63,16 @@ function startComfyProgressWatch(base: string, clientId: string, promptId: strin
         const data = message.data || {};
         if (data.prompt_id && String(data.prompt_id) !== promptId) return;
 
-        if (message.type === "progress") {
+        if (message.type === "execution_interrupted" || message.type === "execution_error") {
+          comfyProgress.set(promptId, { ...comfyProgress.get(promptId), updatedAt: Date.now(), terminalError: message.type === "execution_interrupted" ? "ComfyUI 已停止生成" : String(data.exception_message || "ComfyUI 执行失败") });
+        } else if (message.type === "progress") {
           const value = Number(data.value);
           const max = Number(data.max);
           const percent = Number.isFinite(value) && Number.isFinite(max) && max > 0
             ? Math.max(0, Math.min(100, Math.floor((value / max) * 100)))
             : undefined;
           comfyProgress.set(promptId, {
+            startedAt: comfyProgress.get(promptId)?.startedAt,
             value: Number.isFinite(value) ? value : undefined,
             max: Number.isFinite(max) ? max : undefined,
             percent,
@@ -76,6 +81,7 @@ function startComfyProgressWatch(base: string, clientId: string, promptId: strin
           });
         } else if (message.type === "executing" || message.type === "execution_start") {
           comfyProgress.set(promptId, {
+            startedAt: message.type === "execution_start" ? Number(data.timestamp) || Date.now() : comfyProgress.get(promptId)?.startedAt,
             node: typeof data.node === "string" ? data.node : undefined,
             stage: message.type === "execution_start" ? "ComfyUI 开始执行" : "ComfyUI 正在执行",
             updatedAt: Date.now(),
@@ -85,8 +91,8 @@ function startComfyProgressWatch(base: string, clientId: string, promptId: strin
         // 预览二进制帧或非 JSON 消息不影响文字进度。
       }
     });
-    socket.addEventListener("close", () => forgetComfyProgressWatch(promptId));
-    socket.addEventListener("error", () => forgetComfyProgressWatch(promptId));
+    socket.addEventListener("close", () => { if (comfySockets.get(promptId) === socket) forgetComfyProgressWatch(promptId); });
+    socket.addEventListener("error", () => { try { socket.close(); } catch {} });
   } catch {
     // WebSocket 不可用时仍回退到 HTTP 队列状态，不影响出片。
   }
@@ -190,8 +196,12 @@ export async function comfyCreateVideoTask(input: VideoCreateInput): Promise<{ t
   });
   const raw = await res.text();
   if (!res.ok) throw new Error(`ComfyUI 提交 ${res.status}: ${raw.slice(0, 500)}`);
-  const d = JSON.parse(raw) as { prompt_id?: string; error?: unknown };
+  const d = JSON.parse(raw) as { prompt_id?: string; error?: unknown; node_errors?: Record<string, unknown> };
   if (!d.prompt_id) throw new Error(`ComfyUI 提交未返回 prompt_id: ${raw.slice(0, 500)}`);
+  if (d.node_errors && Object.keys(d.node_errors).length) {
+    await comfyCancelVideoTask(`comfy::${d.prompt_id}`);
+    throw new Error(`ComfyUI 部分节点验证失败，已取消不完整任务：${JSON.stringify(d.node_errors).slice(0, 1800)}`);
+  }
   startComfyProgressWatch(base, clientId, d.prompt_id);
   return { taskId: `comfy::${d.prompt_id}::${clientId}`, raw: d };
 }
@@ -231,20 +241,14 @@ function outputSummary(value: unknown) {
 }
 
 async function queueProgress(base: string, promptId: string) {
-  const live = progressLabel(promptId);
-  if (live) return live;
-  try {
     const res = await fetch(`${base}/queue`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return "ComfyUI 队列中";
+    if (!res.ok) throw new Error(`ComfyUI 队列查询失败 ${res.status}`);
     const queue = await res.json() as { queue_running?: unknown[]; queue_pending?: unknown[] };
     const running = queue.queue_running || [];
     const pending = queue.queue_pending || [];
-    if (running.some((item) => Array.isArray(item) && String(item[1]) === promptId)) return "ComfyUI 正在生成";
+    if (running.some((item) => Array.isArray(item) && String(item[1]) === promptId)) return progressLabel(promptId) || "ComfyUI 正在生成（当前节点未上报百分比）";
     const index = pending.findIndex((item) => Array.isArray(item) && String(item[1]) === promptId);
-    return index >= 0 ? `ComfyUI 排队中，前方 ${index} 个任务` : "ComfyUI 队列中";
-  } catch {
-    return "ComfyUI 队列中";
-  }
+    return index >= 0 ? `ComfyUI 排队中，前方 ${index} 个任务` : "";
 }
 
 export async function comfyCancelVideoTask(taskId: string): Promise<{ message: string }> {
@@ -287,7 +291,7 @@ export async function comfyCancelVideoTask(taskId: string): Promise<{ message: s
   return { message: "ComfyUI 队列中已找不到该任务，工作台已停止轮询" };
 }
 
-export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> {
+export async function comfyQueryVideoTask(taskId: string, outputKind: "video" | "frame" = "video"): Promise<VideoStatus> {
   const { promptId, clientId } = taskParts(taskId);
   const base = baseUrl();
   // Railway 重启后内存中的监听会消失；带 client_id 的新任务可在下一次轮询时自动重新监听。
@@ -296,14 +300,32 @@ export async function comfyQueryVideoTask(taskId: string): Promise<VideoStatus> 
   const raw = await res.text();
   if (!res.ok) throw new Error(`ComfyUI 查询 ${res.status}: ${raw.slice(0, 300)}`);
   const history = JSON.parse(raw) as Record<string, { status?: { status_str?: string; messages?: unknown[] }; outputs?: unknown }>;
-  const item = history[promptId];
-  if (!item) return { taskId, state: "running", isFinal: false, progress: await queueProgress(base, promptId), resultUrl: "", error: "", cost: 0, raw: history };
+  let item = history[promptId];
+  const live = comfyProgress.get(promptId);
+  const failed = (error: string): VideoStatus => {
+    closeComfyProgressWatch(promptId);
+    return { taskId, state: "failed", isFinal: true, progress: "已结束", resultUrl: "", error, cost: 0, raw: item || history };
+  };
+  if (live?.terminalError) return failed(live.terminalError);
+  if (!item) {
+    const progress = await queueProgress(base, promptId);
+    if (progress) {
+      const elapsed = live?.startedAt ? `已执行 ${Math.max(0, Math.floor((Date.now() - live.startedAt) / 1000))} 秒 · ` : "";
+      return { taskId, state: "running", isFinal: false, progress: elapsed + progress, resultUrl: "", error: "", cost: 0, raw: history };
+    }
+    // Re-read history after checking queue: completion can move the task between these reads.
+    const check = await fetch(`${base}/history/${encodeURIComponent(promptId)}`, { headers: headers(), signal: AbortSignal.timeout(20_000) });
+    if (!check.ok) throw new Error(`ComfyUI 历史查询失败 ${check.status}`);
+    item = (await check.json())[promptId];
+    if (!item) return failed("ComfyUI 队列及历史中均无该任务：可能已取消、清除或服务重启。已停止等待。");
+  }
   const status = item.status?.status_str || "";
-  if (status === "error") {
+  if (status === "error" || (item.status?.messages || []).some((m) => Array.isArray(m) && ["execution_interrupted", "execution_error"].includes(String(m[0])))) {
     closeComfyProgressWatch(promptId);
     return { taskId, state: "failed", isFinal: true, progress: "", resultUrl: "", error: JSON.stringify(item.status?.messages || "ComfyUI 工作流执行失败"), cost: 0, raw: item };
   }
-  const video = findVideo(item.outputs);
+  // First-frame jobs must use our designated decoded-image output, never a reference PreviewImage.
+  const video = outputKind === "frame" ? findImage((item.outputs as Record<string, unknown>)?.["998"]) : findVideo(item.outputs);
   // 绝不能把 ComfyUI 已经完成但没有视频产物的任务继续伪装成“生成中”。
   if (!video && ["success", "completed"].includes(status.toLowerCase())) {
     closeComfyProgressWatch(promptId);
@@ -345,8 +367,15 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * 没有外部图片 API 时，复用用户的 H3 工作流生成 5 秒片段，并取解码出的第一帧作为工作台首帧。
  * 工作流与视频使用同一组人物/场景参考图，因此首帧和之后 H3 视频处在同一视觉空间。
  */
-export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ buffer: Buffer; mime: string }> }): Promise<{ buffer: Buffer; mime: string }> {
+export interface ComfyFrameHooks {
+  onSubmitted?: (taskId: string) => Promise<void>;
+  onProgress?: (progress: string) => Promise<void>;
+  isCancelled?: () => Promise<boolean>;
+}
+
+export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ buffer: Buffer; mime: string }> } & ComfyFrameHooks): Promise<{ buffer: Buffer; mime: string }> {
   const base = baseUrl();
+  const clientId = `short-play-frame-${randomUUID()}`;
   const images = await Promise.all(opts.refs.map((ref, i) => uploadImage(base, `data:${ref.mime};base64,${ref.buffer.toString("base64")}`, i)));
   const wf = cloneWorkflow();
   wf["147"].inputs.value = opts.prompt;
@@ -358,29 +387,35 @@ export async function comfyGenerateFrame(opts: { prompt: string; refs: Array<{ b
   const submitted = await fetch(`${base}/prompt`, {
     method: "POST",
     headers: { ...headers(), "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: wf, client_id: "short-play-frame" }),
+    body: JSON.stringify({ prompt: wf, client_id: clientId }),
     signal: AbortSignal.timeout(120_000),
   });
   const submitRaw = await submitted.text();
   if (!submitted.ok) throw new Error(`ComfyUI 首帧提交 ${submitted.status}: ${submitRaw.slice(0, 500)}`);
-  const task = JSON.parse(submitRaw) as { prompt_id?: string };
+  const task = JSON.parse(submitRaw) as { prompt_id?: string; node_errors?: Record<string, unknown> };
   if (!task.prompt_id) throw new Error(`ComfyUI 首帧提交未返回 prompt_id: ${submitRaw.slice(0, 400)}`);
-
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await pause(5_000);
-    const res = await fetch(`${base}/history/${encodeURIComponent(task.prompt_id)}`, { headers: headers(), signal: AbortSignal.timeout(60_000) });
-    const raw = await res.text();
-    if (!res.ok) throw new Error(`ComfyUI 首帧查询 ${res.status}: ${raw.slice(0, 300)}`);
-    const item = (JSON.parse(raw) as Record<string, { status?: { status_str?: string; messages?: unknown[] }; outputs?: unknown }>)[task.prompt_id];
-    if (!item) continue;
-    if (item.status?.status_str === "error") throw new Error(`ComfyUI 首帧失败: ${JSON.stringify(item.status.messages || "").slice(0, 500)}`);
-    const image = findImage(item.outputs);
-    if (!image) continue;
-    const query = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder || "", type: image.type || "output" });
-    const file = await fetch(`${base}/view?${query}`, { headers: headers(), signal: AbortSignal.timeout(120_000) });
+  const taskId = `comfy::${task.prompt_id}::${clientId}`;
+  await opts.onSubmitted?.(taskId);
+  if (task.node_errors && Object.keys(task.node_errors).length) {
+    await comfyCancelVideoTask(taskId);
+    throw new Error(`ComfyUI 首帧节点验证失败：${JSON.stringify(task.node_errors).slice(0, 1800)}`);
+  }
+  startComfyProgressWatch(base, clientId, task.prompt_id);
+  try {
+  for (let attempt = 0; attempt < 450; attempt += 1) {
+    if (await opts.isCancelled?.()) {
+      await comfyCancelVideoTask(taskId);
+      throw new Error("用户停止生成");
+    }
+    const state = await comfyQueryVideoTask(taskId, "frame");
+    await opts.onProgress?.(state.progress);
+    if (!state.isFinal) { await pause(1_000); continue; }
+    if (state.state !== "success") throw new Error(state.error);
+    const file = await fetch(state.resultUrl, { headers: headers(), signal: AbortSignal.timeout(120_000) });
     if (!file.ok) throw new Error(`ComfyUI 下载首帧失败 ${file.status}`);
     const mime = (file.headers.get("content-type") || "image/png").split(";")[0];
     return { buffer: Buffer.from(await file.arrayBuffer()), mime };
   }
   throw new Error("ComfyUI 首帧超过 15 分钟未完成");
+  } finally { closeComfyProgressWatch(task.prompt_id); }
 }
