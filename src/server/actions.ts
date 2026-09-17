@@ -58,7 +58,7 @@ export async function updateProjectBasics(projectId: string, data: { title?: str
   revalidatePath(P(projectId), "layout");
 }
 
-export async function updateVideoEngine(projectId: string, data: { videoEngine?: string; videoResolution?: string; imageQuality?: string; textOnlyRefs?: boolean }) {
+export async function updateVideoEngine(projectId: string, data: { videoEngine?: string; videoResolution?: string; imageQuality?: string; textOnlyRefs?: boolean; orientation?: string }) {
   await projects.updateVideoEngine(projectId, data);
   revalidatePath(paths.settings(projectId));
 }
